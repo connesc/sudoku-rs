@@ -114,7 +114,7 @@ impl Value {
     fn new(cell: Cell) -> Self {
         Value{
             cell,
-            options: 0b111111111,
+            options: (1 << 9) - 1,
         }
     }
 
@@ -159,12 +159,23 @@ impl Value {
         }
     }
 
-    fn set(&mut self, digit: u8) {
-        self.options = 1 << (digit - 1);
+    fn is(&self, digit: u8) -> bool {
+        self.options == 1 << (digit - 1)
+    }
+
+    fn set(&mut self, digit: u8) -> bool {
+        let value = 1 << (digit - 1);
+        let changed = self.options != value;
+        self.options = value;
+        changed
     }
 
     fn reset(&mut self) {
-        self.options = 0b111111111;
+        self.options = (1 << 9) - 1;
+    }
+
+    fn empty(&mut self) {
+        self.options = 0;
     }
 
     fn has_option(&self, digit: u8) -> bool {
@@ -173,9 +184,9 @@ impl Value {
 
     fn remove_option(&mut self, digit: u8) -> bool {
         let mask = 1 << (digit - 1);
-        let existed = self.options & mask != 0;
+        let changed = self.options & mask != 0;
         self.options &= !mask;
-        existed
+        changed
     }
 }
 
@@ -231,6 +242,7 @@ impl iter::IntoIterator for Group {
 
 struct Grid([Value; 81]);
 
+#[derive(Debug)]
 enum State {
     Complete,
     Incomplete,
@@ -262,68 +274,7 @@ impl Grid {
     }
 
     fn solve(&mut self) -> State {
-        let mut propagated = [false; 81];
-        for &cell in &Grid::CELLS {
-            if !self.propagate(&mut propagated, cell) {
-                return State::Impossible;
-            }
-        }
-        for &groups in &[&Grid::ROWS, &Grid::COLUMNS, &Grid::BLOCKS] {
-            for &group in groups {
-                if !self.resolve_group(&mut propagated, group) {
-                    return State::Impossible;
-                }
-            }
-        }
-        self.state()
-    }
-
-    fn propagate(&mut self, propagated: &mut [bool; 81], cell: Cell) -> bool {
-        if propagated[cell.0 as usize] {
-            return true;
-        }
-        match self[cell].digit() {
-            Digit::Defined(digit) => {
-                propagated[cell.0 as usize] = true;
-
-                for &neighbor in cell.neighbors() {
-                    if !self[neighbor].remove_option(digit) {
-                        continue;
-                    }
-
-                    if !self.propagate(propagated, neighbor) {
-                        return false;
-                    }
-
-                    for &group in &[neighbor.row(), neighbor.column(), neighbor.block()] {
-                        if !self.resolve_group(propagated, group) {
-                            return false;
-                        }
-                    }
-                }
-
-                true
-            },
-            Digit::Undefined => true,
-            Digit::Impossible => false,
-        }
-    }
-
-    fn resolve_group(&mut self, propagated: &mut [bool; 81], group: Group) -> bool {
-        for digit in 1..=9 {
-            let mut canditates = group.into_iter().filter(|&x| self[x].has_option(digit));
-            if let Some(cell) = canditates.next() {
-                if canditates.next().is_none() && self[cell].is_undefined() {
-                    self[cell].set(digit);
-                    if !self.propagate(propagated, cell) {
-                        return false;
-                    }
-
-                    //TODO: re-resolve groups?
-                }
-            }
-        }
-        true
+        Solver::new(self).solve()
     }
 }
 
@@ -364,6 +315,147 @@ impl fmt::Display for Grid {
     }
 }
 
+struct Solver<'a> {
+    grid: &'a mut Grid,
+    queue: u128,
+    done: u128,
+}
+
+impl<'a> Solver<'a> {
+    fn new(grid: &mut Grid) -> Solver {
+        Solver {
+            grid,
+            queue: (1 << 108) - 1,
+            done: 0,
+        }
+    }
+
+    fn solve(&mut self) -> State {
+        'consumer: loop {
+            let mut mask = 1u128;
+
+            for &cell in &Grid::CELLS {
+                if self.queue & mask != 0 {
+                    self.queue &= !mask;
+                    if !self.propagate_cell(cell, mask) {
+                        return State::Impossible;
+                    }
+                    if self.queue == 0 {
+                        break 'consumer;
+                    }
+                }
+                mask <<= 1;
+            }
+
+            for &groups in &[&Grid::ROWS, &Grid::COLUMNS, &Grid::BLOCKS] {
+                for &group in groups {
+                    if self.queue & mask != 0 {
+                        self.queue &= !mask;
+                        if !self.resolve_group(group, mask) {
+                            return State::Impossible;
+                        }
+                        if self.queue == 0 {
+                            break 'consumer;
+                        }
+                    }
+                    mask <<= 1;
+                }
+            }
+        };
+
+        if self.done == (1 << 108) - 1 {
+            State::Complete
+        } else {
+            State::Incomplete
+        }
+    }
+
+    fn propagate_cell(&mut self, cell: Cell, mask: u128) -> bool {
+        match self.grid[cell].digit() {
+            Digit::Defined(digit) => {
+                for &neighbor in cell.neighbors() {
+                    if !self.grid[neighbor].remove_option(digit) {
+                        continue;
+                    }
+
+                    self.enqueue_cell(neighbor);
+
+                    for &group in &[neighbor.row(), neighbor.column(), neighbor.block()] {
+                        self.enqueue_group(group);
+                    }
+                }
+
+                self.done |= mask;
+
+                true
+            },
+            Digit::Undefined => true,
+            Digit::Impossible => false,
+        }
+    }
+
+    fn resolve_group(&mut self, group: Group, mask: u128) -> bool {
+        let mut defined = 0u8;
+
+        for digit in 1..=9 {
+            let mut canditates = group.into_iter().filter(|&x| self.grid[x].has_option(digit));
+            match canditates.next() {
+                Some(cell) => {
+                    if canditates.next().is_some() {
+                        continue;
+                    }
+
+                    defined += 1;
+
+                    if !self.grid[cell].set(digit) {
+                        continue;
+                    }
+
+                    self.enqueue_cell(cell);
+
+                    for &group in &[cell.row(), cell.column(), cell.block()] {
+                        self.enqueue_group(group);
+                    }
+                },
+                None => {
+                    for cell in group {
+                        let value = &mut self.grid[cell];
+                        if value.is_undefined() {
+                            value.empty();
+                        }
+                    }
+                    return false;
+                }
+            }
+        }
+
+        if defined == 9 {
+            self.queue &= !mask;
+            self.done |= mask;
+        }
+
+        true
+    }
+
+    fn enqueue_cell(&mut self, cell: Cell) {
+        let mask = 1u128 << cell.0;
+        if self.done & mask == 0 {
+            self.queue |= mask;
+        }
+    }
+
+    fn enqueue_group(&mut self, group: Group) {
+        let mask = 1u128 << match group {
+            Group::Row(index) => 81 + index,
+            Group::Column(index) => 90 + index,
+            Group::Block(index) => 99 + index,
+        };
+        if self.done & mask == 0 {
+            self.queue |= mask;
+        }
+    }
+}
+
 fn main() {
     println!("{}", Grid::default());
 
@@ -386,8 +478,22 @@ fn main() {
         0, 0, 0, 0, 0, 1, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 1,
     ]);
-    grid.solve();
-    println!("{}", grid);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
+
+    let mut grid = Grid::new(&[
+        1, 0, 0, 0, 0, 0, 0, 0, 0,
+        2, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 1, 0, 0, 0, 0, 0, 0, 0,
+        0, 2, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 2, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 2, 1,
+    ]);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
     grid = Grid::new(&[
         1, 2, 3, 4, 0, 6, 7, 8, 9,
@@ -400,8 +506,8 @@ fn main() {
         0, 0, 0, 0, 4, 0, 0, 0, 0,
         0, 0, 0, 0, 6, 0, 0, 0, 0,
     ]);
-    grid.solve();
-    println!("{}", grid);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
     grid = Grid::new(&[
         0, 0, 9, 8, 0, 0, 1, 0, 0,
@@ -414,8 +520,8 @@ fn main() {
         0, 0, 0, 0, 3, 0, 0, 0, 5,
         2, 0, 4, 9, 0, 0, 0, 8, 0,
     ]);
-    grid.solve();
-    println!("{}", grid);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
     grid = Grid::new(&[
         0, 0, 0, 0, 0, 3, 0, 2, 7,
@@ -428,8 +534,8 @@ fn main() {
         0, 3, 7, 0, 0, 2, 0, 9, 0,
         9, 0, 2, 0, 0, 0, 0, 6, 0,
     ]);
-    grid.solve();
-    println!("{}", grid);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
     grid = Grid::new(&[
         0, 0, 5, 0, 0, 0, 7, 0, 0,
@@ -442,8 +548,8 @@ fn main() {
         0, 0, 0, 0, 4, 0, 0, 0, 0,
         0, 5, 0, 1, 9, 0, 0, 8, 0,
     ]);
-    grid.solve();
-    println!("{}", grid);
+    let state = grid.solve();
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
     // for &row in &Grid::ROWS {
     //     for &cell in row {
