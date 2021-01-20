@@ -101,7 +101,7 @@ impl fmt::Display for Cell {
 
 struct Value {
     cell: Cell,
-    options: [bool; 9],
+    options: u16,
 }
 
 enum Digit {
@@ -114,23 +114,28 @@ impl Value {
     fn new(cell: Cell) -> Self {
         Value{
             cell,
-            options: [true; 9],
+            options: 0b111111111,
         }
     }
 
     fn digit(&self) -> Digit {
-        let mut options = self.options.iter().enumerate().filter_map(|(index, &possible)|
-            if possible { Some(index) } else { None }
-        );
-        match options.next() {
-            Some(index) => {
-                match options.next() {
-                    Some(_) => Digit::Undefined,
-                    None => Digit::Defined((index + 1) as u8)
-                }
-            },
-            None => Digit::Impossible,
+        if self.options == 0 {
+            return Digit::Impossible
         }
+
+        let mut bits = self.options;
+        for digit in 1..=9 {
+            let remaining = bits >> 1;
+            if bits & 1 != 0 {
+                return if remaining == 0 {
+                    Digit::Defined(digit)
+                } else {
+                    Digit::Undefined
+                }
+            }
+            bits = remaining;
+        }
+        Digit::Impossible
     }
 
     fn is_defined(&self) -> bool {
@@ -155,22 +160,21 @@ impl Value {
     }
 
     fn set(&mut self, digit: u8) {
-        self.options = [false; 9];
-        self.options[(digit - 1) as usize] = true;
+        self.options = 1 << (digit - 1);
     }
 
     fn reset(&mut self) {
-        self.options = [true; 9];
+        self.options = 0b111111111;
     }
 
     fn has_option(&self, digit: u8) -> bool {
-        self.options[(digit - 1) as usize]
+        self.options & (1 << (digit - 1)) != 0
     }
 
     fn remove_option(&mut self, digit: u8) -> bool {
-        let option = &mut self.options[(digit - 1) as usize];
-        let existed = *option;
-        *option = false;
+        let mask = 1 << (digit - 1);
+        let existed = self.options & mask != 0;
+        self.options &= !mask;
         existed
     }
 }
