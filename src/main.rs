@@ -1,8 +1,10 @@
-use std::fmt;
-use std::iter;
-use std::iter::Iterator;
-use std::slice;
-use std::ops::{Index,IndexMut};
+use std::{
+    fmt,
+    iter::{self, Iterator},
+    slice,
+    ops::{Index, IndexMut}
+};
+use rand::prelude::*;
 
 macro_rules! cells {
     ($($a:ident)*) => {
@@ -99,6 +101,7 @@ impl fmt::Display for Cell {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Value {
     cell: Cell,
     options: u16,
@@ -240,6 +243,7 @@ impl iter::IntoIterator for Group {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Grid([Value; 81]);
 
 #[derive(Debug)]
@@ -275,6 +279,63 @@ impl Grid {
 
     fn solve(&mut self) -> State {
         Solver::new(self).solve()
+    }
+
+    fn bruteforce<R: Rng>(&mut self, rng: &mut R) -> bool {
+        match self.solve() {
+            State::Complete => return true,
+            State::Impossible => return false,
+            State::Incomplete => (),
+        }
+
+        let mut undefined = Grid::CELLS;
+        let undefined = {
+            let mut len = 0usize;
+            for index in 0..81 {
+                let cell = undefined[index];
+                if !self[cell].is_undefined() {
+                    continue;
+                }
+                if index > len {
+                    undefined[len] = cell;
+                }
+                len += 1;
+            }
+            &mut undefined[..len].shuffle(rng);
+            &undefined[..len]
+        };
+
+        for &cell in undefined {
+            let mut candidates = [1u8, 2, 3, 4, 5, 6, 7, 8, 9];
+            let candidates = {
+                let value = &self[cell];
+                let mut len = 0usize;
+                for index in 0..9 {
+                    let digit = candidates[index];
+                    if !value.has_option(digit) {
+                        continue;
+                    }
+                    if index > len {
+                        candidates[len] = digit;
+                    }
+                    len += 1;
+                }
+                &mut candidates[..len].shuffle(rng);
+                &candidates[..len]
+            };
+
+            for &digit in candidates {
+                let mut attempt = self.clone();
+                attempt[cell].set(digit);
+
+                if attempt.bruteforce(rng) {
+                    *self = attempt;
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 }
 
@@ -457,6 +518,8 @@ impl<'a> Solver<'a> {
 }
 
 fn main() {
+    let mut rng = thread_rng();
+
     println!("{}", Grid::default());
 
     for &blk in &Grid::BLOCKS {
@@ -551,6 +614,20 @@ fn main() {
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
+    grid = Grid::new(&[
+        0, 0, 5, 0, 0, 0, 7, 0, 0,
+        0, 0, 0, 0, 0, 1, 0, 0, 0,
+        7, 0, 0, 4, 0, 0, 0, 0, 6,
+        0, 6, 0, 0, 0, 0, 5, 9, 8,
+        4, 0, 0, 0, 8, 0, 0, 0, 0,
+        0, 3, 0, 2, 0, 0, 0, 0, 0,
+        0, 0, 3, 0, 0, 0, 0, 2, 7,
+        0, 0, 0, 0, 4, 0, 0, 0, 0,
+        0, 5, 0, 1, 9, 0, 0, 8, 0,
+    ]);
+    let state = grid.bruteforce(&mut rng);
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
+
     // for &row in &Grid::ROWS {
     //     for &cell in row {
     //         print!("Cell {} =>", cell);
@@ -564,4 +641,8 @@ fn main() {
     //         println!();
     //     }
     // }
+
+    grid = Grid::default();
+    let state = grid.bruteforce(&mut rng);
+    println!("{}\n{:?} / {:?}", grid, state, grid.state());
 }
