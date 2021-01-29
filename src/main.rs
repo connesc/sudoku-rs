@@ -258,6 +258,7 @@ impl Grid {
     const ROWS: [Group; 9] = groups!(Row);
     const COLUMNS: [Group; 9] = groups!(Column);
     const BLOCKS: [Group; 9] = groups!(Block);
+    const DIGITS: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     fn new(values: &[u8; 81]) -> Grid {
         let mut grid = Grid::default();
@@ -306,7 +307,7 @@ impl Grid {
         };
 
         for &cell in undefined {
-            let mut candidates = [1u8, 2, 3, 4, 5, 6, 7, 8, 9];
+            let mut candidates = Grid::DIGITS;
             let candidates = {
                 let value = &self[cell];
                 let mut len = 0usize;
