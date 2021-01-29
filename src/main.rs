@@ -253,6 +253,26 @@ enum State {
     Impossible,
 }
 
+fn partial_shuffle<'a, R, T, F>(rng: &mut R, items: &'a mut [T], pred: F) -> &'a[T] where
+    R: Rng,
+    T: Copy,
+    F: Fn(T) -> bool,
+{
+    let mut len = 0usize;
+    for index in 0..items.len() {
+        let item = items[index];
+        if !pred(item) {
+            continue;
+        }
+        if index > len {
+            items[len] = item;
+        }
+        len += 1;
+    }
+    &mut items[..len].shuffle(rng);
+    &items[..len]
+}
+
 impl Grid {
     const CELLS: [Cell; 81] = cells!(cell);
     const ROWS: [Group; 9] = groups!(Row);
@@ -290,40 +310,13 @@ impl Grid {
         }
 
         let mut undefined = Grid::CELLS;
-        let undefined = {
-            let mut len = 0usize;
-            for index in 0..81 {
-                let cell = undefined[index];
-                if !self[cell].is_undefined() {
-                    continue;
-                }
-                if index > len {
-                    undefined[len] = cell;
-                }
-                len += 1;
-            }
-            &mut undefined[..len].shuffle(rng);
-            &undefined[..len]
-        };
+        let undefined = partial_shuffle(rng, &mut undefined, |x| self[x].is_undefined());
 
         for &cell in undefined {
+            let value = &self[cell];
+
             let mut candidates = Grid::DIGITS;
-            let candidates = {
-                let value = &self[cell];
-                let mut len = 0usize;
-                for index in 0..9 {
-                    let digit = candidates[index];
-                    if !value.has_option(digit) {
-                        continue;
-                    }
-                    if index > len {
-                        candidates[len] = digit;
-                    }
-                    len += 1;
-                }
-                &mut candidates[..len].shuffle(rng);
-                &candidates[..len]
-            };
+            let candidates = partial_shuffle(rng, &mut candidates, |x| value.has_option(x));
 
             for &digit in candidates {
                 let mut attempt = self.clone();
