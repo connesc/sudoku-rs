@@ -1,11 +1,20 @@
 use std::{
     convert::TryFrom,
     iter::Iterator,
+    mem::size_of,
 };
 use rand::prelude::*;
 
 fn main() {
     let mut rng = thread_rng();
+
+    println!("size_of(Digit) = {}", size_of::<sudoku::Digit>());
+    println!("size_of(Cell) = {}", size_of::<sudoku::Cell>());
+    println!("size_of(Group) = {}", size_of::<sudoku::Group>());
+    println!("size_of(Value) = {}", size_of::<sudoku::Value>());
+    println!("size_of(Grid) = {}", size_of::<sudoku::Grid>());
+    println!("size_of(ValueState) = {}", size_of::<sudoku::ValueState>());
+    println!("size_of(GridState) = {}", size_of::<sudoku::GridState>());
 
     println!("{}", sudoku::Grid::default());
 
