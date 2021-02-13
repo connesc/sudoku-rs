@@ -141,16 +141,46 @@ impl fmt::Display for Digit {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Value {
-    cell: Cell,
-    options: u16,
-}
-
 enum ValueState {
     Defined(Digit),
     Undefined,
     Impossible,
+}
+
+impl ValueState {
+    fn is_defined(self) -> bool {
+        match self {
+            ValueState::Defined(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_undefined(self) -> bool {
+        match self {
+            ValueState::Undefined => true,
+            _ => false,
+        }
+    }
+
+    fn is_impossible(self) -> bool {
+        match self {
+            ValueState::Impossible => true,
+            _ => false,
+        }
+    }
+
+    fn digit(self) -> Option<Digit> {
+        match self {
+            ValueState::Defined(digit) => Some(digit),
+            _ => None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Value {
+    cell: Cell,
+    options: u16,
 }
 
 impl Value {
@@ -179,34 +209,6 @@ impl Value {
             bits = remaining;
         }
         ValueState::Impossible
-    }
-
-    fn is_defined(&self) -> bool {
-        match self.state() {
-            ValueState::Defined(_) => true,
-            _ => false,
-        }
-    }
-
-    fn is_undefined(&self) -> bool {
-        match self.state() {
-            ValueState::Undefined => true,
-            _ => false,
-        }
-    }
-
-    fn is_impossible(&self) -> bool {
-        match self.state() {
-            ValueState::Impossible => true,
-            _ => false,
-        }
-    }
-
-    fn digit(&self) -> Option<Digit> {
-        match self.state() {
-            ValueState::Defined(digit) => Some(digit),
-            _ => None
-        }
     }
 
     fn is(&self, digit: Digit) -> bool {
@@ -294,15 +296,15 @@ impl iter::IntoIterator for Group {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Grid([Value; 81]);
-
 #[derive(Debug)]
 enum GridState {
     Complete,
     Incomplete,
     Impossible,
 }
+
+#[derive(Debug, Clone)]
+struct Grid([Value; 81]);
 
 fn partial_shuffle<'a, R, T, F>(rng: &mut R, items: &'a mut [T], pred: F) -> &'a[T] where
     R: Rng,
@@ -354,7 +356,7 @@ impl Grid {
         }
 
         let mut undefined = Grid::CELLS;
-        let undefined = partial_shuffle(rng, &mut undefined, |x| self[x].is_undefined());
+        let undefined = partial_shuffle(rng, &mut undefined, |x| self[x].state().is_undefined());
 
         for &cell in undefined {
             let value = &self[cell];
@@ -533,7 +535,7 @@ impl<'a> Solver<'a> {
                 None => {
                     for cell in group {
                         let value = &mut self.grid[cell];
-                        if value.is_undefined() {
+                        if value.state().is_undefined() {
                             value.empty();
                         }
                     }
