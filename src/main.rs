@@ -1,4 +1,5 @@
 use std::{
+    convert::{TryFrom, TryInto},
     fmt,
     iter::{self, Iterator},
     slice,
@@ -101,14 +102,53 @@ impl fmt::Display for Cell {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Digit {
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+    Six,
+    Seven,
+    Eight,
+    Nine,
+}
+
+const DIGITS: [Digit; 9] = [Digit::One, Digit::Two, Digit::Three, Digit::Four, Digit::Five, Digit::Six, Digit::Seven, Digit::Eight, Digit::Nine];
+
+impl From<Digit> for u8 {
+    fn from(value: Digit) -> Self {
+        Self::from((value as u8) + 1)
+    }
+}
+
+impl TryFrom<u8> for Digit {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value > 0 {
+            DIGITS.get((value - 1) as usize).copied().ok_or("Digit cannot be greater than 9")
+        } else {
+            Err("Digit cannot be 0")
+        }
+    }
+}
+
+impl fmt::Display for Digit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", u8::from(*self))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Value {
     cell: Cell,
     options: u16,
 }
 
-enum Digit {
-    Defined(u8),
+enum ValueState {
+    Defined(Digit),
     Undefined,
     Impossible,
 }
@@ -121,53 +161,60 @@ impl Value {
         }
     }
 
-    fn digit(&self) -> Digit {
+    fn state(&self) -> ValueState {
         if self.options == 0 {
-            return Digit::Impossible
+            return ValueState::Impossible
         }
 
         let mut bits = self.options;
-        for digit in 1..=9 {
+        for &digit in &DIGITS {
             let remaining = bits >> 1;
             if bits & 1 != 0 {
                 return if remaining == 0 {
-                    Digit::Defined(digit)
+                    ValueState::Defined(digit)
                 } else {
-                    Digit::Undefined
+                    ValueState::Undefined
                 }
             }
             bits = remaining;
         }
-        Digit::Impossible
+        ValueState::Impossible
     }
 
     fn is_defined(&self) -> bool {
-        match self.digit() {
-            Digit::Defined(_) => true,
+        match self.state() {
+            ValueState::Defined(_) => true,
             _ => false,
         }
     }
 
     fn is_undefined(&self) -> bool {
-        match self.digit() {
-            Digit::Undefined => true,
+        match self.state() {
+            ValueState::Undefined => true,
             _ => false,
         }
     }
 
     fn is_impossible(&self) -> bool {
-        match self.digit() {
-            Digit::Impossible => true,
+        match self.state() {
+            ValueState::Impossible => true,
             _ => false,
         }
     }
 
-    fn is(&self, digit: u8) -> bool {
-        self.options == 1 << (digit - 1)
+    fn digit(&self) -> Option<Digit> {
+        match self.state() {
+            ValueState::Defined(digit) => Some(digit),
+            _ => None
+        }
     }
 
-    fn set(&mut self, digit: u8) -> bool {
-        let value = 1 << (digit - 1);
+    fn is(&self, digit: Digit) -> bool {
+        self.options == 1 << (digit as usize)
+    }
+
+    fn set(&mut self, digit: Digit) -> bool {
+        let value = 1 << (digit as usize);
         let changed = self.options != value;
         self.options = value;
         changed
@@ -181,24 +228,28 @@ impl Value {
         self.options = 0;
     }
 
-    fn has_option(&self, digit: u8) -> bool {
-        self.options & (1 << (digit - 1)) != 0
+    fn has_option(&self, digit: Digit) -> bool {
+        self.options & (1 << (digit as usize)) != 0
     }
 
-    fn remove_option(&mut self, digit: u8) -> bool {
-        let mask = 1 << (digit - 1);
+    fn remove_option(&mut self, digit: Digit) -> bool {
+        let mask = 1 << (digit as usize);
         let changed = self.options & mask != 0;
         self.options &= !mask;
         changed
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Digit> + 'a {
+        DIGITS.iter().copied().filter(move |&x| self.has_option(x))
     }
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.digit() {
-            Digit::Defined(digit) => write!(f, "{}", digit),
-            Digit::Undefined => write!(f, " "),
-            Digit::Impossible => write!(f, "X"),
+        match self.state() {
+            ValueState::Defined(digit) => write!(f, "{}", digit),
+            ValueState::Undefined => write!(f, " "),
+            ValueState::Impossible => write!(f, "X"),
         }
     }
 }
@@ -247,7 +298,7 @@ impl iter::IntoIterator for Group {
 struct Grid([Value; 81]);
 
 #[derive(Debug)]
-enum State {
+enum GridState {
     Complete,
     Incomplete,
     Impossible,
@@ -278,35 +329,28 @@ impl Grid {
     const ROWS: [Group; 9] = groups!(Row);
     const COLUMNS: [Group; 9] = groups!(Column);
     const BLOCKS: [Group; 9] = groups!(Block);
-    const DIGITS: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-    fn new(values: &[u8; 81]) -> Grid {
-        let mut grid = Grid::default();
-        for (index, &value) in values.iter().enumerate() {
-            if value > 0 {
-                grid[Cell(index as u8)].set(value);
-            }
-        }
-        grid
-    }
-
-    fn state(&self) -> State {
-        self.0.iter().fold(State::Complete, |state, value| match (state, value.digit()) {
-            (State::Impossible, _) | (_, Digit::Impossible) => State::Impossible,
-            (State::Incomplete, _) | (_, Digit::Undefined) => State::Incomplete,
-            (State::Complete, Digit::Defined(_)) => State::Complete,
+    fn state(&self) -> GridState {
+        self.0.iter().fold(GridState::Complete, |state, value| match (state, value.state()) {
+            (GridState::Impossible, _) | (_, ValueState::Impossible) => GridState::Impossible,
+            (GridState::Incomplete, _) | (_, ValueState::Undefined) => GridState::Incomplete,
+            (GridState::Complete, ValueState::Defined(_)) => GridState::Complete,
         })
     }
 
-    fn solve(&mut self) -> State {
+    fn options<'a>(&'a self) -> impl Iterator<Item = (Cell, Digit)> + 'a {
+        self.0.iter().flat_map(|value| value.iter().map(move |x| (value.cell, x)))
+    }
+
+    fn solve(&mut self) -> GridState {
         Solver::new(self).solve()
     }
 
     fn bruteforce<R: Rng>(&mut self, rng: &mut R) -> bool {
         match self.solve() {
-            State::Complete => return true,
-            State::Impossible => return false,
-            State::Incomplete => (),
+            GridState::Complete => return true,
+            GridState::Impossible => return false,
+            GridState::Incomplete => (),
         }
 
         let mut undefined = Grid::CELLS;
@@ -315,7 +359,7 @@ impl Grid {
         for &cell in undefined {
             let value = &self[cell];
 
-            let mut candidates = Grid::DIGITS;
+            let mut candidates = DIGITS;
             let candidates = partial_shuffle(rng, &mut candidates, |x| value.has_option(x));
 
             for &digit in candidates {
@@ -353,6 +397,20 @@ impl Default for Grid {
     }
 }
 
+impl TryFrom<&[u8; 81]> for Grid {
+    type Error = &'static str;
+
+    fn try_from(value: &[u8; 81]) -> Result<Self, Self::Error> {
+        let mut grid = Grid::default();
+        for (index, &value) in value.iter().enumerate() {
+            if value > 0 {
+                grid[Cell(index as u8)].set(value.try_into()?);
+            }
+        }
+        Ok(grid)
+    }
+}
+
 impl fmt::Display for Grid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &row in &Grid::ROWS {
@@ -385,7 +443,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn solve(&mut self) -> State {
+    fn solve(&mut self) -> GridState {
         'consumer: loop {
             let mut mask = 1u128;
 
@@ -393,7 +451,7 @@ impl<'a> Solver<'a> {
                 if self.queue & mask != 0 {
                     self.queue &= !mask;
                     if !self.propagate_cell(cell, mask) {
-                        return State::Impossible;
+                        return GridState::Impossible;
                     }
                     if self.queue == 0 {
                         break 'consumer;
@@ -407,7 +465,7 @@ impl<'a> Solver<'a> {
                     if self.queue & mask != 0 {
                         self.queue &= !mask;
                         if !self.resolve_group(group, mask) {
-                            return State::Impossible;
+                            return GridState::Impossible;
                         }
                         if self.queue == 0 {
                             break 'consumer;
@@ -419,15 +477,15 @@ impl<'a> Solver<'a> {
         };
 
         if self.done == (1 << 108) - 1 {
-            State::Complete
+            GridState::Complete
         } else {
-            State::Incomplete
+            GridState::Incomplete
         }
     }
 
     fn propagate_cell(&mut self, cell: Cell, mask: u128) -> bool {
-        match self.grid[cell].digit() {
-            Digit::Defined(digit) => {
+        match self.grid[cell].state() {
+            ValueState::Defined(digit) => {
                 for &neighbor in cell.neighbors() {
                     if !self.grid[neighbor].remove_option(digit) {
                         continue;
@@ -444,15 +502,15 @@ impl<'a> Solver<'a> {
 
                 true
             },
-            Digit::Undefined => true,
-            Digit::Impossible => false,
+            ValueState::Undefined => true,
+            ValueState::Impossible => false,
         }
     }
 
     fn resolve_group(&mut self, group: Group, mask: u128) -> bool {
         let mut defined = 0u8;
 
-        for digit in 1..=9 {
+        for &digit in &DIGITS {
             let mut canditates = group.into_iter().filter(|&x| self.grid[x].has_option(digit));
             match canditates.next() {
                 Some(cell) => {
@@ -524,7 +582,7 @@ fn main() {
         }
     }
 
-    let mut grid = Grid::new(&[
+    let mut grid = Grid::try_from(&[
         1, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -534,11 +592,11 @@ fn main() {
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 1, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    let mut grid = Grid::new(&[
+    let mut grid = Grid::try_from(&[
         1, 0, 0, 0, 0, 0, 0, 0, 0,
         2, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -548,11 +606,11 @@ fn main() {
         0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 2, 1, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 2, 1,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    grid = Grid::new(&[
+    grid = Grid::try_from(&[
         1, 2, 3, 4, 0, 6, 7, 8, 9,
         0, 0, 0, 0, 9, 0, 0, 0, 0,
         0, 0, 0, 0, 8, 0, 0, 0, 0,
@@ -562,11 +620,11 @@ fn main() {
         0, 0, 0, 0, 2, 0, 0, 0, 0,
         0, 0, 0, 0, 4, 0, 0, 0, 0,
         0, 0, 0, 0, 6, 0, 0, 0, 0,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    grid = Grid::new(&[
+    grid = Grid::try_from(&[
         0, 0, 9, 8, 0, 0, 1, 0, 0,
         1, 6, 2, 0, 7, 0, 5, 0, 0,
         0, 3, 0, 1, 2, 9, 7, 0, 0,
@@ -576,11 +634,11 @@ fn main() {
         9, 1, 0, 6, 5, 8, 4, 0, 0,
         0, 0, 0, 0, 3, 0, 0, 0, 5,
         2, 0, 4, 9, 0, 0, 0, 8, 0,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    grid = Grid::new(&[
+    grid = Grid::try_from(&[
         0, 0, 0, 0, 0, 3, 0, 2, 7,
         0, 0, 0, 0, 6, 7, 0, 0, 0,
         0, 9, 0, 5, 0, 0, 0, 8, 3,
@@ -590,11 +648,11 @@ fn main() {
         0, 8, 0, 0, 4, 0, 0, 0, 0,
         0, 3, 7, 0, 0, 2, 0, 9, 0,
         9, 0, 2, 0, 0, 0, 0, 6, 0,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    grid = Grid::new(&[
+    grid = Grid::try_from(&[
         0, 0, 5, 0, 0, 0, 7, 0, 0,
         0, 0, 0, 0, 0, 1, 0, 0, 0,
         7, 0, 0, 4, 0, 0, 0, 0, 6,
@@ -604,11 +662,11 @@ fn main() {
         0, 0, 3, 0, 0, 0, 0, 2, 7,
         0, 0, 0, 0, 4, 0, 0, 0, 0,
         0, 5, 0, 1, 9, 0, 0, 8, 0,
-    ]);
+    ]).unwrap();
     let state = grid.solve();
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
-    grid = Grid::new(&[
+    grid = Grid::try_from(&[
         0, 0, 5, 0, 0, 0, 7, 0, 0,
         0, 0, 0, 0, 0, 1, 0, 0, 0,
         7, 0, 0, 4, 0, 0, 0, 0, 6,
@@ -618,7 +676,7 @@ fn main() {
         0, 0, 3, 0, 0, 0, 0, 2, 7,
         0, 0, 0, 0, 4, 0, 0, 0, 0,
         0, 5, 0, 1, 9, 0, 0, 8, 0,
-    ]);
+    ]).unwrap();
     let state = grid.bruteforce(&mut rng);
     println!("{}\n{:?} / {:?}", grid, state, grid.state());
 
